@@ -61,10 +61,12 @@ namespace System.IO
             return SafeFileHandle.Open(_path, openFlags, (int)OpenPermissions);
         }
 
+        private static bool GetDefaultIsAsync(SafeFileHandle handle) => handle.IsAsync ?? DefaultIsAsync;
+
         /// <summary>Initializes a stream for reading or writing a Unix file.</summary>
         /// <param name="mode">How the file should be opened.</param>
         /// <param name="share">What other access to the file should be allowed.  This is currently ignored.</param>
-        private void Init(FileMode mode, FileShare share)
+        private void Init(FileMode mode, FileShare share, string originalPath)
         {
             _fileHandle.IsAsync = _useAsyncIO;
 
@@ -635,12 +637,12 @@ namespace System.IO
         /// <param name="source">The buffer to write data from.</param>
         /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
         /// <returns>A task that represents the asynchronous write operation.</returns>
-        private Task WriteAsyncInternal(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
+        private ValueTask WriteAsyncInternal(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
         {
             Debug.Assert(_useAsyncIO);
 
             if (cancellationToken.IsCancellationRequested)
-                return Task.FromCanceled(cancellationToken);
+                return new ValueTask(Task.FromCanceled(cancellationToken));
 
             if (_fileHandle.IsClosed)
                 throw Error.GetFileNotOpen();
@@ -667,11 +669,11 @@ namespace System.IO
                         source.Span.CopyTo(new Span<byte>(GetBuffer(), _writePos, source.Length));
                         _writePos += source.Length;
 
-                        return Task.CompletedTask;
+                        return default;
                     }
                     catch (Exception exc)
                     {
-                        return Task.FromException(exc);
+                        return new ValueTask(Task.FromException(exc));
                     }
                     finally
                     {
@@ -682,7 +684,7 @@ namespace System.IO
 
             // Otherwise, issue the whole request asynchronously.
             _asyncState.ReadOnlyMemory = source;
-            return waitTask.ContinueWith((t, s) =>
+            return new ValueTask(waitTask.ContinueWith((t, s) =>
             {
                 // The options available on Unix for writing asynchronously to an arbitrary file 
                 // handle typically amount to just using another thread to do the synchronous write, 
@@ -702,7 +704,7 @@ namespace System.IO
                     thisRef.WriteSpan(readOnlyMemory.Span);
                 }
                 finally { thisRef._asyncState.Release(); }
-            }, this, CancellationToken.None, TaskContinuationOptions.DenyChildAttach, TaskScheduler.Default);
+            }, this, CancellationToken.None, TaskContinuationOptions.DenyChildAttach, TaskScheduler.Default));
         }
 
         /// <summary>Sets the current position of this stream to the given value.</summary>

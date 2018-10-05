@@ -13,7 +13,7 @@ using ProtocolFamily = System.Net.Internals.ProtocolFamily;
 
 namespace System.Net
 {
-    internal static class NameResolutionPal
+    internal static partial class NameResolutionPal
     {
         //
         // used by GetHostName() to preallocate a buffer for the call to gethostname.
@@ -114,7 +114,7 @@ namespace System.Net
                 //
                 // now get the next pointer in the array and start over
                 //
-                currentArrayElement = IntPtrHelper.Add(currentArrayElement, IntPtr.Size);
+                currentArrayElement = currentArrayElement + IntPtr.Size;
                 nativePointer = Marshal.ReadIntPtr(currentArrayElement);
             }
 
@@ -147,7 +147,7 @@ namespace System.Net
                 //
                 // now get the next pointer in the array and start over
                 //
-                currentArrayElement = IntPtrHelper.Add(currentArrayElement, IntPtr.Size);
+                currentArrayElement = currentArrayElement + IntPtr.Size;
                 nativePointer = Marshal.ReadIntPtr(currentArrayElement);
             }
 
@@ -257,7 +257,6 @@ namespace System.Net
 
             nativeErrorCode = 0;
 
-            // TODO #2891: Remove the copying step to improve performance. This requires a change in the contracts.
             byte[] addressBuffer = new byte[address.Size];
             for (int i = 0; i < address.Size; i++)
             {
@@ -282,7 +281,7 @@ namespace System.Net
             return hostname.ToString();
         }
 
-        public static string GetHostName()
+        public static unsafe string GetHostName()
         {
             //
             // note that we could cache the result ourselves since you
@@ -291,20 +290,12 @@ namespace System.Net
             // react to that change.
             //
 
-            StringBuilder sb = new StringBuilder(HostNameBufferLength);
-            SocketError errorCode =
-                Interop.Winsock.gethostname(
-                    sb,
-                    HostNameBufferLength);
-
-            //
-            // if the call failed throw a SocketException()
-            //
-            if (errorCode != SocketError.Success)
+            byte* buffer = stackalloc byte[HostNameBufferLength];
+            if (Interop.Winsock.gethostname(buffer, HostNameBufferLength) != SocketError.Success)
             {
                 throw new SocketException();
             }
-            return sb.ToString();
+            return new string((sbyte*)buffer);
         }
 
         public static void EnsureSocketsAreInitialized()
@@ -336,19 +327,6 @@ namespace System.Net
                         Volatile.Write(ref s_initialized, true);
                     }
                 }
-            }
-        }
-
-        private static bool GetAddrInfoExSupportsOverlapped()
-        {
-            using (SafeLibraryHandle libHandle = Interop.Kernel32.LoadLibraryExW(Interop.Libraries.Ws2_32, IntPtr.Zero, Interop.Kernel32.LOAD_LIBRARY_SEARCH_SYSTEM32))
-            {
-                if (libHandle.IsInvalid)
-                    return false;
-
-                // We can't just check that 'GetAddrInfoEx' exists, because it existed before supporting overlapped.
-                // The existance of 'GetAddrInfoExCancel' indicates that overlapped is supported.
-                return Interop.Kernel32.GetProcAddress(libHandle, Interop.Winsock.GetAddrInfoExCancelFunctionName) != IntPtr.Zero;
             }
         }
 
@@ -507,8 +485,6 @@ namespace System.Net
         [StructLayout(LayoutKind.Sequential)]
         private unsafe struct GetAddrInfoExContext
         {
-            private static readonly int Size = sizeof(GetAddrInfoExContext);
-
             public NativeOverlapped Overlapped;
             public AddressInfoEx* Result;
             public IntPtr CancelHandle;
@@ -516,7 +492,7 @@ namespace System.Net
 
             public static GetAddrInfoExContext* AllocateContext()
             {
-                var context = (GetAddrInfoExContext*)Marshal.AllocHGlobal(Size);
+                var context = (GetAddrInfoExContext*)Marshal.AllocHGlobal(sizeof(GetAddrInfoExContext));
                 *context = default;
 
                 return context;
@@ -525,7 +501,7 @@ namespace System.Net
             public static void FreeContext(GetAddrInfoExContext* context)
             {
                 if (context->Result != null)
-                    Interop.Winsock.FreeAddrInfoEx(context->Result);
+                    Interop.Winsock.FreeAddrInfoExW(context->Result);
 
                 Marshal.FreeHGlobal((IntPtr)context);
             }

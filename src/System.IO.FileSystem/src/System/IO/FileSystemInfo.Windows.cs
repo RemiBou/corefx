@@ -2,10 +2,19 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
 using System.Diagnostics;
+using System.IO;
+
+#if MS_IO_REDIST
+using Microsoft.IO.Enumeration;
+
+namespace Microsoft.IO
+#else
 using System.IO.Enumeration;
 
 namespace System.IO
+#endif
 {
     partial class FileSystemInfo
     {
@@ -14,7 +23,7 @@ namespace System.IO
 
         // Cache any error retrieving the file/directory information
         // We use this field in conjunction with the Refresh method which should never throw.
-        // If we succeed we store a zero, on failure we store the HResult so that we can
+        // If we succeed we store a zero, on failure we store the error code so that we can
         // throw an appropriate error when attempting to access the cached info.
         private int _dataInitialized = -1;
 
@@ -25,10 +34,10 @@ namespace System.IO
         internal static unsafe FileSystemInfo Create(string fullPath, ref FileSystemEntry findData)
         {
             FileSystemInfo info = findData.IsDirectory
-                ? (FileSystemInfo) new DirectoryInfo(fullPath, fileName: new string(findData.FileName), isNormalized: true)
-                : new FileInfo(fullPath, fileName: new string(findData.FileName), isNormalized: true);
+                ? (FileSystemInfo) new DirectoryInfo(fullPath, fileName: findData.FileName.ToString(), isNormalized: true)
+                : new FileInfo(fullPath, fileName: findData.FileName.ToString(), isNormalized: true);
 
-            Debug.Assert(!PathInternal.IsPartiallyQualified(fullPath), $"'{fullPath}' should be fully qualified when constructed from directory enumeration");
+            Debug.Assert(!PathInternal.IsPartiallyQualified(fullPath.AsSpan()), $"'{fullPath}' should be fully qualified when constructed from directory enumeration");
 
             info.Init(findData._info);
             return info;
@@ -150,5 +159,10 @@ namespace System.IO
             // when someone actually accesses a property
             _dataInitialized = FileSystem.FillAttributeInfo(FullPath, ref _data, returnErrorOnNotFound: false);
         }
+
+        // If we're opened around a enumerated path that ends in a period or space we need to be able to
+        // act on the path normally (open streams/writers/etc.)
+        internal string NormalizedPath
+            => PathInternal.EndsWithPeriodOrSpace(FullPath) ? PathInternal.EnsureExtendedPrefix(FullPath) : FullPath;
     }
 }

@@ -70,7 +70,36 @@ namespace System.IO
             return ((value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z'));
         }
 
+        internal static bool EndsWithPeriodOrSpace(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return false;
+
+            char c = path[path.Length - 1];
+            return c == ' ' || c == '.';
+        }
+
         /// <summary>
+        /// Adds the extended path prefix (\\?\) if not already a device path, IF the path is not relative,
+        /// AND the path is more than 259 characters. (> MAX_PATH + null). This will also insert the extended
+        /// prefix if the path ends with a period or a space. Trailing periods and spaces are normally eaten
+        /// away from paths during normalization, but if we see such a path at this point it should be
+        /// normalized and has retained the final characters. (Typically from one of the *Info classes)
+        /// </summary>
+        internal static string EnsureExtendedPrefixIfNeeded(string path)
+        {
+            if (path != null && (path.Length >= MaxShortPath || EndsWithPeriodOrSpace(path)))
+            {
+                return EnsureExtendedPrefix(path);
+            }
+            else
+            {
+                return path;
+            }
+        }
+
+        /// <summary>
+        /// DO NOT USE- Use EnsureExtendedPrefixIfNeeded. This will be removed shortly.
         /// Adds the extended path prefix (\\?\) if not already a device path, IF the path is not relative,
         /// AND the path is more than 259 characters. (> MAX_PATH + null)
         /// </summary>
@@ -101,7 +130,7 @@ namespace System.IO
             // In any case, all internal usages should be hitting normalize path (Path.GetFullPath) before they hit this
             // shimming method. (Or making a change that doesn't impact normalization, such as adding a filename to a
             // normalized base path.)
-            if (IsPartiallyQualified(path) || IsDevice(path))
+            if (IsPartiallyQualified(path.AsSpan()) || IsDevice(path.AsSpan()))
                 return path;
 
             // Given \\server\share in longpath becomes \\?\UNC\server\share
@@ -127,6 +156,19 @@ namespace System.IO
                     && (path[2] == '.' || path[2] == '?')
                     && IsDirectorySeparator(path[3])
                 );
+        }
+
+        /// <summary>
+        /// Returns true if the path is a device UNC (\\?\UNC\, \\.\UNC\)
+        /// </summary>
+        internal static bool IsDeviceUNC(ReadOnlySpan<char> path)
+        {
+            return path.Length >= UncExtendedPrefixLength
+                && IsDevice(path)
+                && IsDirectorySeparator(path[7])
+                && path[4] == 'U'
+                && path[5] == 'N'
+                && path[6] == 'C';
         }
 
         /// <summary>
@@ -175,65 +217,57 @@ namespace System.IO
         {
             int pathLength = path.Length;
             int i = 0;
-            int volumeSeparatorLength = 2;  // Length to the colon "C:"
-            int uncRootLength = 2;          // Length to the start of the server name "\\"
 
-            bool extendedSyntax = StartsWithOrdinal(path, ExtendedPathPrefix);
-            bool extendedUncSyntax = StartsWithOrdinal(path, UncExtendedPathPrefix);
-            if (extendedSyntax)
-            {
-                // Shift the position we look for the root from to account for the extended prefix
-                if (extendedUncSyntax)
-                {
-                    // "\\" -> "\\?\UNC\"
-                    uncRootLength = UncExtendedPathPrefix.Length;
-                }
-                else
-                {
-                    // "C:" -> "\\?\C:"
-                    volumeSeparatorLength += ExtendedPathPrefix.Length;
-                }
-            }
+            bool deviceSyntax = IsDevice(path);
+            bool deviceUnc = deviceSyntax && IsDeviceUNC(path);
 
-            if ((!extendedSyntax || extendedUncSyntax) && pathLength > 0 && IsDirectorySeparator(path[0]))
+            if ((!deviceSyntax || deviceUnc) && pathLength > 0 && IsDirectorySeparator(path[0]))
             {
                 // UNC or simple rooted path (e.g. "\foo", NOT "\\?\C:\foo")
-
-                i = 1; //  Drive rooted (\foo) is one character
-                if (extendedUncSyntax || (pathLength > 1 && IsDirectorySeparator(path[1])))
+                if (deviceUnc || (pathLength > 1 && IsDirectorySeparator(path[1])))
                 {
-                    // UNC (\\?\UNC\ or \\), scan past the next two directory separators at most
-                    // (e.g. to \\?\UNC\Server\Share or \\Server\Share\)
-                    i = uncRootLength;
-                    int n = 2; // Maximum separators to skip
+                    // UNC (\\?\UNC\ or \\), scan past server\share
+
+                    // Start past the prefix ("\\" or "\\?\UNC\")
+                    i = deviceUnc ? UncExtendedPrefixLength : UncPrefixLength;
+
+                    // Skip two separators at most
+                    int n = 2;
                     while (i < pathLength && (!IsDirectorySeparator(path[i]) || --n > 0))
                         i++;
                 }
+                else
+                {
+                    // Current drive rooted (e.g. "\foo")
+                    i = 1;
+                }
             }
-            else if (pathLength >= volumeSeparatorLength
-                && path[volumeSeparatorLength - 1] == VolumeSeparatorChar
-                && IsValidDriveChar(path[volumeSeparatorLength - 2]))
+            else if (deviceSyntax)
             {
-                // Path is at least longer than where we expect a colon, and has a colon (\\?\A:, A:)
-                // If the colon is followed by a directory separator, move past it
-                i = volumeSeparatorLength;
-                if (pathLength >= volumeSeparatorLength + 1 && IsDirectorySeparator(path[volumeSeparatorLength]))
+                // Device path (e.g. "\\?\.", "\\.\")
+                // Skip any characters following the prefix that aren't a separator
+                i = DevicePrefixLength;
+                while (i < pathLength && !IsDirectorySeparator(path[i]))
+                    i++;
+
+                // If there is another separator take it, as long as we have had at least one
+                // non-separator after the prefix (e.g. don't take "\\?\\", but take "\\?\a\")
+                if (i < pathLength && i > DevicePrefixLength && IsDirectorySeparator(path[i]))
                     i++;
             }
-            return i;
-        }
-
-        private static bool StartsWithOrdinal(ReadOnlySpan<char> source, string value)
-        {
-            if (source.Length < value.Length)
-                return false;
-
-            for (int i = 0; i < value.Length; i++)
+            else if (pathLength >= 2
+                && path[1] == VolumeSeparatorChar
+                && IsValidDriveChar(path[0]))
             {
-                if (value[i] != source[i])
-                    return false;
+                // Valid drive specified path ("C:", "D:", etc.)
+                i = 2;
+
+                // If the colon is followed by a directory separator, move past it (e.g "C:\")
+                if (pathLength > 2 && IsDirectorySeparator(path[2]))
+                    i++;
             }
-            return true;
+
+            return i;
         }
 
         /// <summary>

@@ -2,9 +2,15 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
+using System.IO;
 using System.Runtime.Serialization;
 
+#if MS_IO_REDIST
+namespace Microsoft.IO
+#else
 namespace System.IO
+#endif
 {
     public abstract partial class FileSystemInfo : MarshalByRefObject, ISerializable
     {
@@ -31,7 +37,6 @@ namespace System.IO
         {
             get
             {
-                // GetFullPathInternal would have already stripped out the terminating "." if present.
                 int length = FullPath.Length;
                 for (int i = length; --i >= 0;)
                 {
@@ -68,76 +73,39 @@ namespace System.IO
 
         public DateTime CreationTime
         {
-            get
-            {
-                // depends on the security check in get_CreationTimeUtc
-                return CreationTimeUtc.ToLocalTime();
-            }
-            set
-            {
-                CreationTimeUtc = value.ToUniversalTime();
-            }
+            get => CreationTimeUtc.ToLocalTime();
+            set => CreationTimeUtc = value.ToUniversalTime();
         }
 
         public DateTime CreationTimeUtc
         {
-            get
-            {
-                return CreationTimeCore.UtcDateTime;
-            }
-            set
-            {
-                CreationTimeCore = File.GetUtcDateTimeOffset(value);
-            }
+            get => CreationTimeCore.UtcDateTime;
+            set => CreationTimeCore = File.GetUtcDateTimeOffset(value);
         }
 
 
         public DateTime LastAccessTime
         {
-            get
-            {
-                return LastAccessTimeUtc.ToLocalTime();
-            }
-            set
-            {
-                LastAccessTimeUtc = value.ToUniversalTime();
-            }
+            get => LastAccessTimeUtc.ToLocalTime();
+            set => LastAccessTimeUtc = value.ToUniversalTime();
         }
 
         public DateTime LastAccessTimeUtc
         {
-            get
-            {
-                return LastAccessTimeCore.UtcDateTime;
-            }
-            set
-            {
-                LastAccessTimeCore = File.GetUtcDateTimeOffset(value);
-            }
+            get => LastAccessTimeCore.UtcDateTime;
+            set => LastAccessTimeCore = File.GetUtcDateTimeOffset(value);
         }
 
         public DateTime LastWriteTime
         {
-            get
-            {
-                return LastWriteTimeUtc.ToLocalTime();
-            }
-            set
-            {
-                LastWriteTimeUtc = value.ToUniversalTime();
-            }
+            get => LastWriteTimeUtc.ToLocalTime();
+            set => LastWriteTimeUtc = value.ToUniversalTime();
         }
 
         public DateTime LastWriteTimeUtc
         {
-            get
-            {
-                return LastWriteTimeCore.UtcDateTime;
-            }
-            set
-            {
-                LastWriteTimeCore = File.GetUtcDateTimeOffset(value);
-            }
+            get => LastWriteTimeCore.UtcDateTime;
+            set => LastWriteTimeCore = File.GetUtcDateTimeOffset(value);
         }
 
         /// <summary>

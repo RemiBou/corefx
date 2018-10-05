@@ -2,12 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
+using System.IO;
 using System.Collections.Generic;
-using System.IO.Enumeration;
 using System.Linq;
-using System.Security;
+
+#if MS_IO_REDIST
+using Microsoft.IO.Enumeration;
+
+namespace Microsoft.IO
+#else
+using System.IO.Enumeration;
 
 namespace System.IO
+#endif
 {
     public static partial class Directory
     {
@@ -38,29 +46,10 @@ namespace System.IO
 
             FileSystem.CreateDirectory(fullPath);
 
-            return new DirectoryInfo(fullPath, null);
+            return new DirectoryInfo(path, fullPath, isNormalized: true);
         }
-
-        // Input to this method should already be fullpath. This method will ensure that we append 
-        // the trailing slash only when appropriate.
-        internal static string EnsureTrailingDirectorySeparator(string fullPath)
-        {
-            string fullPathWithTrailingDirectorySeparator;
-
-            if (!PathHelpers.EndsInDirectorySeparator(fullPath))
-                fullPathWithTrailingDirectorySeparator = fullPath + PathHelpers.DirectorySeparatorCharAsString;
-            else
-                fullPathWithTrailingDirectorySeparator = fullPath;
-
-            return fullPathWithTrailingDirectorySeparator;
-        }
-
 
         // Tests if the given path refers to an existing DirectoryInfo on disk.
-        // 
-        // Your application must have Read permission to the directory's
-        // contents.
-        //
         public static bool Exists(string path)
         {
             try
@@ -75,8 +64,6 @@ namespace System.IO
                 return FileSystem.DirectoryExists(fullPath);
             }
             catch (ArgumentException) { }
-            catch (NotSupportedException) { }  // Security can throw this on ":"
-            catch (SecurityException) { }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
 
@@ -244,7 +231,7 @@ namespace System.IO
                 throw new ArgumentNullException(nameof(path));
 
             string fullPath = Path.GetFullPath(path);
-            string root = fullPath.Substring(0, PathInternal.GetRootLength(fullPath));
+            string root = fullPath.Substring(0, PathInternal.GetRootLength(fullPath.AsSpan()));
 
             return root;
         }
@@ -252,7 +239,7 @@ namespace System.IO
         internal static string InternalGetDirectoryRoot(string path)
         {
             if (path == null) return null;
-            return path.Substring(0, PathInternal.GetRootLength(path));
+            return path.Substring(0, PathInternal.GetRootLength(path.AsSpan()));
         }
 
         public static string GetCurrentDirectory() => Environment.CurrentDirectory;
@@ -280,10 +267,10 @@ namespace System.IO
                 throw new ArgumentException(SR.Argument_EmptyFileName, nameof(destDirName));
 
             string fullsourceDirName = Path.GetFullPath(sourceDirName);
-            string sourcePath = EnsureTrailingDirectorySeparator(fullsourceDirName);
+            string sourcePath = PathInternal.EnsureTrailingSeparator(fullsourceDirName);
 
             string fulldestDirName = Path.GetFullPath(destDirName);
-            string destPath = EnsureTrailingDirectorySeparator(fulldestDirName);
+            string destPath = PathInternal.EnsureTrailingSeparator(fulldestDirName);
 
             StringComparison pathComparison = PathInternal.StringComparison;
 

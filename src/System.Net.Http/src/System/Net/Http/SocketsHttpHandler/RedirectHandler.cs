@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -27,27 +28,47 @@ namespace System.Net.Http
 
         protected internal override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (NetEventSource.IsEnabled) NetEventSource.Enter(this, request, cancellationToken);
+
             HttpResponseMessage response = await _initialInnerHandler.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
             uint redirectCount = 0;
             Uri redirectUri;
             while ((redirectUri = GetUriForRedirect(request.RequestUri, response)) != null)
             {
-                response.Dispose();
-
                 redirectCount++;
+
                 if (redirectCount > _maxAutomaticRedirections)
                 {
-                    throw new HttpRequestException(SR.net_http_max_redirects);
+                    // If we exceed the maximum number of redirects
+                    // then just return the 3xx response.
+                    if (NetEventSource.IsEnabled)
+                    {
+                        TraceError($"Exceeded max number of redirects. Redirect from {request.RequestUri} to {redirectUri} blocked.", request.GetHashCode());
+                    }
+
+                    break;
                 }
+
+                response.Dispose();
 
                 // Clear the authorization header.
                 request.Headers.Authorization = null;
+
+                if (NetEventSource.IsEnabled)
+                {
+                    Trace($"Redirecting from {request.RequestUri} to {redirectUri} in response to status code {(int)response.StatusCode} '{response.StatusCode}'.", request.GetHashCode());
+                }
 
                 // Set up for the redirect
                 request.RequestUri = redirectUri;
                 if (RequestRequiresForceGet(response.StatusCode, request.Method))
                 {
+                    if (NetEventSource.IsEnabled)
+                    {
+                        Trace($"Modified request from {request.Method} to {HttpMethod.Get} in response to status code {(int)response.StatusCode} '{response.StatusCode}'.", request.GetHashCode());
+                    }
+
                     request.Method = HttpMethod.Get;
                     request.Content = null;
                     request.Headers.TransferEncodingChunked = false;
@@ -56,6 +77,8 @@ namespace System.Net.Http
                 // Issue the redirected request.
                 response = await _redirectInnerHandler.SendAsync(request, cancellationToken).ConfigureAwait(false);
             }
+
+            if (NetEventSource.IsEnabled) NetEventSource.Exit(this);
 
             return response;
         }
@@ -69,6 +92,7 @@ namespace System.Net.Http
                 case HttpStatusCode.SeeOther:
                 case HttpStatusCode.TemporaryRedirect:
                 case HttpStatusCode.MultipleChoices:
+                case HttpStatusCode.PermanentRedirect:
                     break;
 
                 default:
@@ -104,7 +128,7 @@ namespace System.Net.Http
             {
                 if (NetEventSource.IsEnabled)
                 {
-                    NetEventSource.Info(this, $"Insecure https to http redirect from '{requestUri}' to '{location}' blocked.");
+                    TraceError($"Insecure https to http redirect from '{requestUri}' to '{location}' blocked.", response.RequestMessage.GetHashCode());
                 }
 
                 return null;
@@ -137,6 +161,12 @@ namespace System.Net.Http
 
             base.Dispose(disposing);
         }
+
+        internal void Trace(string message, int requestId, [CallerMemberName] string memberName = null) =>
+            NetEventSource.Log.HandlerMessage(0, 0, requestId, memberName, ToString() + ": " + message);
+
+        internal void TraceError(string message, int requestId, [CallerMemberName] string memberName = null) =>
+            NetEventSource.Log.HandlerMessageError(0, 0, requestId, memberName, ToString() + ": " + message);
     }
 }
 

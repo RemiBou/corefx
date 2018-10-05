@@ -5,30 +5,45 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks.Sources;
 
 namespace System.IO.Pipelines
 {
     [DebuggerDisplay("CanceledState: {_canceledState}, IsCompleted: {IsCompleted}")]
     internal struct PipeAwaitable
     {
-        private static readonly Action _awaitableIsCompleted = () => { };
-        private static readonly Action _awaitableIsNotCompleted = () => { };
+        private static readonly Action<object> s_awaitableIsCompleted = _ => { };
+        private static readonly Action<object> s_awaitableIsNotCompleted = _ => { };
 
         private CanceledState _canceledState;
-        private Action _state;
+        private Action<object> _completion;
+        private object _completionState;
         private CancellationToken _cancellationToken;
         private CancellationTokenRegistration _cancellationTokenRegistration;
+        private SynchronizationContext _synchronizationContext;
+        private ExecutionContext _executionContext;
+        private bool _useSynchronizationContext;
 
-        public PipeAwaitable(bool completed)
+        public PipeAwaitable(bool completed, bool useSynchronizationContext)
         {
             _canceledState = CanceledState.NotCanceled;
-            _state = completed ? _awaitableIsCompleted : _awaitableIsNotCompleted;
+            _completion = completed ? s_awaitableIsCompleted : s_awaitableIsNotCompleted;
+            _completionState = null;
+            _cancellationToken = CancellationToken.None;
+            _cancellationTokenRegistration = default;
+            _synchronizationContext = null;
+            _executionContext = null;
+            _useSynchronizationContext = useSynchronizationContext;
         }
+
+        public bool IsCompleted => ReferenceEquals(_completion, s_awaitableIsCompleted);
+
+        public bool HasContinuation => !ReferenceEquals(_completion, s_awaitableIsNotCompleted);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public CancellationTokenRegistration AttachToken(CancellationToken cancellationToken, Action<object> callback, object state)
         {
-            CancellationTokenRegistration oldRegistration;
+            CancellationTokenRegistration oldRegistration = default;
             if (!cancellationToken.Equals(_cancellationToken))
             {
                 oldRegistration = _cancellationTokenRegistration;
@@ -43,26 +58,39 @@ namespace System.IO.Pipelines
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public Action Complete()
+        public void Complete(out CompletionData completionData)
         {
-            Action awaitableState = _state;
-            _state = _awaitableIsCompleted;
+            Action<object> currentCompletion = _completion;
+            object currentState = _completionState;
 
-            if (!ReferenceEquals(awaitableState, _awaitableIsCompleted) &&
-                !ReferenceEquals(awaitableState, _awaitableIsNotCompleted))
+            _completion = s_awaitableIsCompleted;
+            _completionState = null;
+
+            completionData = default;
+
+            if (!ReferenceEquals(currentCompletion, s_awaitableIsCompleted) &&
+                !ReferenceEquals(currentCompletion, s_awaitableIsNotCompleted))
             {
-                return awaitableState;
+                completionData = new CompletionData(currentCompletion, currentState, _executionContext, _synchronizationContext);
             }
-            return null;
+            else if (_canceledState == CanceledState.CancellationRequested)
+            {
+                // Make sure we won't reset the awaitable in ObserveCancellation
+                // If Complete happens in between Cancel and ObserveCancellation
+                _canceledState = CanceledState.CancellationPreRequested;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Reset()
         {
-            if (ReferenceEquals(_state, _awaitableIsCompleted) &&
+            if (ReferenceEquals(_completion, s_awaitableIsCompleted) &&
                 _canceledState < CanceledState.CancellationPreRequested)
             {
-                _state = _awaitableIsNotCompleted;
+                _completion = s_awaitableIsNotCompleted;
+                _completionState = null;
+                _synchronizationContext = null;
+                _executionContext = null;
             }
 
             // Change the state from observed -> not cancelled.
@@ -73,39 +101,53 @@ namespace System.IO.Pipelines
             }
         }
 
-        public bool IsCompleted => ReferenceEquals(_state, _awaitableIsCompleted);
-        internal bool HasContinuation => !ReferenceEquals(_state, _awaitableIsNotCompleted);
-
-        public Action OnCompleted(Action continuation, out bool doubleCompletion)
+        public void OnCompleted(Action<object> continuation, object state, ValueTaskSourceOnCompletedFlags flags, out CompletionData completionData, out bool doubleCompletion)
         {
+            completionData = default;
+
             doubleCompletion = false;
-            Action awaitableState = _state;
-            if (ReferenceEquals(awaitableState, _awaitableIsNotCompleted))
+            Action<object> awaitableState = _completion;
+            if (ReferenceEquals(awaitableState, s_awaitableIsNotCompleted))
             {
-                _state = continuation;
+                _completion = continuation;
+                _completionState = state;
+
+                // Capture the SynchronizationContext if there's any and we're allowing capture (from pipe options)
+                if (_useSynchronizationContext && (flags & ValueTaskSourceOnCompletedFlags.UseSchedulingContext) != 0)
+                {
+                    SynchronizationContext sc = SynchronizationContext.Current;
+                    if (sc != null && sc.GetType() != typeof(SynchronizationContext))
+                    {
+                        _synchronizationContext = SynchronizationContext.Current;
+                    }
+                }
+
+                // Capture the execution context
+                if ((flags & ValueTaskSourceOnCompletedFlags.FlowExecutionContext) != 0)
+                {
+                    _executionContext = ExecutionContext.Capture();
+                }
             }
 
-            if (ReferenceEquals(awaitableState, _awaitableIsCompleted))
+            if (ReferenceEquals(awaitableState, s_awaitableIsCompleted))
             {
-                return continuation;
+                completionData = new CompletionData(continuation, state, _executionContext, _synchronizationContext);
+                return;
             }
 
-            if (!ReferenceEquals(awaitableState, _awaitableIsNotCompleted))
+            if (!ReferenceEquals(awaitableState, s_awaitableIsNotCompleted))
             {
                 doubleCompletion = true;
-                return continuation;
+                completionData = new CompletionData(continuation, state, _executionContext, _synchronizationContext);
             }
-
-            return null;
         }
 
-        public Action Cancel()
+        public void Cancel(out CompletionData completionData)
         {
-            Action action = Complete();
-            _canceledState = action == null ?
+            Complete(out completionData);
+            _canceledState = completionData.Completion == null ?
                 CanceledState.CancellationPreRequested :
                 CanceledState.CancellationRequested;
-            return action;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

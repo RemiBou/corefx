@@ -4,13 +4,14 @@
 
 using System.Buffers;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace System.IO.Pipelines
 {
-    internal sealed class BufferSegment : IMemoryList<byte>
+    internal sealed class BufferSegment : ReadOnlySequenceSegment<byte>
     {
-        private OwnedMemory<byte> _ownedMemory;
-
+        private IMemoryOwner<byte> _memoryOwner;
+        private BufferSegment _next;
         private int _end;
 
         /// <summary>
@@ -43,24 +44,26 @@ namespace System.IO.Pipelines
         /// working memory. The "active" memory is grown when bytes are copied in, End is increased, and Next is assigned. The "active"
         /// memory is shrunk when bytes are consumed, Start is increased, and blocks are returned to the pool.
         /// </summary>
-        public BufferSegment NextSegment { get; set; }
-
-        /// <summary>
-        /// Combined length of all segments before this
-        /// </summary>
-        public long RunningIndex { get; private set; }
-
-        public void SetMemory(OwnedMemory<byte> buffer)
+        public BufferSegment NextSegment
         {
-            SetMemory(buffer, 0, 0);
+            get => _next;
+            set
+            {
+                _next = value;
+                Next = value;
+            }
         }
 
-        public void SetMemory(OwnedMemory<byte> ownedMemory, int start, int end, bool readOnly = false)
+        public void SetMemory(IMemoryOwner<byte> memoryOwner)
         {
-            _ownedMemory = ownedMemory;
-            _ownedMemory.Retain();
+            SetMemory(memoryOwner, 0, 0);
+        }
 
-            AvailableMemory = _ownedMemory.Memory;
+        public void SetMemory(IMemoryOwner<byte> memoryOwner, int start, int end, bool readOnly = false)
+        {
+            _memoryOwner = memoryOwner;
+
+            AvailableMemory = _memoryOwner.Memory;
 
             ReadOnly = readOnly;
             RunningIndex = 0;
@@ -71,18 +74,16 @@ namespace System.IO.Pipelines
 
         public void ResetMemory()
         {
-            _ownedMemory.Release();
-            _ownedMemory = null;
+            _memoryOwner.Dispose();
+            _memoryOwner = null;
             AvailableMemory = default;
         }
 
+        internal IMemoryOwner<byte> MemoryOwner => _memoryOwner;
+
         public Memory<byte> AvailableMemory { get; private set; }
 
-        public Memory<byte> Memory { get; private set; }
-
         public int Length => End - Start;
-
-        public IMemoryList<byte> Next => NextSegment;
 
         /// <summary>
         /// If true, data should not be written into the backing block after the End offset. Data between start and end should never be modified
@@ -93,7 +94,11 @@ namespace System.IO.Pipelines
         /// <summary>
         /// The amount of writable bytes in this segment. It is the amount of bytes between Length and End
         /// </summary>
-        public int WritableBytes => AvailableMemory.Length - End;
+        public int WritableBytes
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => AvailableMemory.Length - End;
+        }
 
         public void SetNext(BufferSegment segment)
         {

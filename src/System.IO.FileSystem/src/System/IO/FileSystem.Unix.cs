@@ -28,6 +28,16 @@ namespace System.IO
                 Interop.CheckIo(Interop.Sys.CopyFile(src.SafeFileHandle, dst.SafeFileHandle));
             }
         }
+        
+        public static void Encrypt(string path)
+        {
+            throw new PlatformNotSupportedException(SR.PlatformNotSupported_FileEncryption);
+        }
+
+        public static void Decrypt(string path)
+        {
+            throw new PlatformNotSupportedException(SR.PlatformNotSupported_FileEncryption);
+        }
 
         public static void ReplaceFile(string sourceFullPath, string destFullPath, string destBackupFullPath, bool ignoreMetadataErrors)
         {
@@ -161,7 +171,7 @@ namespace System.IO
 
                         // Input allows trailing separators in order to match Windows behavior
                         // Unix does not accept trailing separators, so must be trimmed
-                        if (!FileExists(PathHelpers.TrimEndingDirectorySeparator(fullPath),
+                        if (!FileExists(PathInternal.TrimEndingDirectorySeparator(fullPath),
                             Interop.Sys.FileTypes.S_IFREG, out fileExistsError) &&
                             fileExistsError.Error == Interop.Error.ENOENT)
                         {
@@ -184,7 +194,7 @@ namespace System.IO
             int length = fullPath.Length;
 
             // We need to trim the trailing slash or the code will try to create 2 directories of the same name.
-            if (length >= 2 && PathHelpers.EndsInDirectorySeparator(fullPath))
+            if (length >= 2 && PathInternal.EndsInDirectorySeparator(fullPath))
             {
                 length--;
             }
@@ -291,11 +301,11 @@ namespace System.IO
                 // This surfaces as a IOException, if we let it go beyond here it would
                 // give DirectoryNotFound.
 
-                if (PathHelpers.EndsInDirectorySeparator(sourceFullPath))
+                if (PathInternal.EndsInDirectorySeparator(sourceFullPath))
                     throw new IOException(SR.Format(SR.IO_PathNotFound_Path, sourceFullPath));
 
                 // ... but it doesn't care if the destination has a trailing separator.
-                destFullPath = PathHelpers.TrimEndingDirectorySeparator(destFullPath);
+                destFullPath = PathInternal.TrimEndingDirectorySeparator(destFullPath);
             }
 
             if (Interop.Sys.Rename(sourceFullPath, destFullPath) < 0)
@@ -395,51 +405,6 @@ namespace System.IO
                         throw Interop.GetExceptionForIoErrno(errorInfo, directory.FullName, isDirectory: true);
                 }
             }
-        }
-
-        public static bool DirectoryExists(string fullPath)
-        {
-            Interop.ErrorInfo ignored;
-            return DirectoryExists(fullPath, out ignored);
-        }
-
-        private static bool DirectoryExists(string fullPath, out Interop.ErrorInfo errorInfo)
-        {
-            return FileExists(fullPath, Interop.Sys.FileTypes.S_IFDIR, out errorInfo);
-        }
-
-        public static bool FileExists(string fullPath)
-        {
-            Interop.ErrorInfo ignored;
-
-            // Input allows trailing separators in order to match Windows behavior
-            // Unix does not accept trailing separators, so must be trimmed
-            return FileExists(PathHelpers.TrimEndingDirectorySeparator(fullPath), Interop.Sys.FileTypes.S_IFREG, out ignored);
-        }
-
-        private static bool FileExists(string fullPath, int fileType, out Interop.ErrorInfo errorInfo)
-        {
-            Debug.Assert(fileType == Interop.Sys.FileTypes.S_IFREG || fileType == Interop.Sys.FileTypes.S_IFDIR);
-
-            Interop.Sys.FileStatus fileinfo;
-            errorInfo = default(Interop.ErrorInfo);
-
-            // First use stat, as we want to follow symlinks.  If that fails, it could be because the symlink
-            // is broken, we don't have permissions, etc., in which case fall back to using LStat to evaluate
-            // based on the symlink itself.
-            if (Interop.Sys.Stat(fullPath, out fileinfo) < 0 &&
-                Interop.Sys.LStat(fullPath, out fileinfo) < 0)
-            {
-                errorInfo = Interop.Sys.GetLastErrorInfo();
-                return false;
-            }
-
-            // Something exists at this path.  If the caller is asking for a directory, return true if it's
-            // a directory and false for everything else.  If the caller is asking for a file, return false for
-            // a directory and true for everything else.
-            return
-                (fileType == Interop.Sys.FileTypes.S_IFDIR) ==
-                ((fileinfo.Mode & Interop.Sys.FileTypes.S_IFMT) == Interop.Sys.FileTypes.S_IFDIR);
         }
 
         /// <summary>Determines whether the specified directory name should be ignored.</summary>
