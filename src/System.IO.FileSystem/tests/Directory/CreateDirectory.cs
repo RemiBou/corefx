@@ -1,4 +1,4 @@
-// Licensed to the .NET Foundation under one or more agreements.
+﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
@@ -17,9 +17,42 @@ namespace System.IO.Tests
             return Directory.CreateDirectory(path);
         }
 
+        public virtual bool IsDirectoryCreate => true;
+
         #endregion
 
         #region UniversalTests
+
+        [Fact]
+        public void FileNameIsToString_NotFullPath()
+        {
+            // We're checking that we're maintaining the original path
+            RemoteInvoke(() =>
+            {
+                Environment.CurrentDirectory = TestDirectory;
+                string subdir = Path.GetRandomFileName();
+                DirectoryInfo info = Create(subdir);
+                Assert.Equal(subdir, info.ToString());
+            }).Dispose();
+        }
+
+        [Fact]
+        public void FileNameIsToString_FullPath()
+        {
+            string subdir = Path.GetRandomFileName();
+            string fullPath = Path.Combine(TestDirectory, subdir);
+            DirectoryInfo info = Create(fullPath);
+            if (PlatformDetection.IsFullFramework && IsDirectoryCreate)
+            {
+                // I think this was accidental. In Core we want to be consistent with constructing
+                // an Info manually then calling Create on it.
+                Assert.Equal(subdir, info.ToString());
+            }
+            else
+            {
+                Assert.Equal(fullPath, info.ToString());
+            }
+        }
 
         [Fact]
         public void NullAsPath_ThrowsArgumentNullException()
@@ -40,7 +73,6 @@ namespace System.IO.Tests
             Assert.Throws<ArgumentException>(() => Create(invalidPath));
         }
 
-        [ActiveIssue(27269)]
         [Theory, MemberData(nameof(PathsWithInvalidCharacters))]
         [SkipOnTargetFramework(TargetFrameworkMonikers.NetFramework)]
         public void PathWithInvalidCharactersAsPath_Core(string invalidPath)
@@ -82,7 +114,14 @@ namespace System.IO.Tests
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsInAppContainer))] // Can't read root in appcontainer
+        public void RootPath_AppContainer()
+        {
+            string dirName = Path.GetPathRoot(Directory.GetCurrentDirectory());
+            Assert.Throws<DirectoryNotFoundException>(() => Create(dirName));
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotInAppContainer))] // Can't read root in appcontainer        
         public void RootPath()
         {
             string dirName = Path.GetPathRoot(Directory.GetCurrentDirectory());
@@ -212,7 +251,7 @@ namespace System.IO.Tests
         [Theory, MemberData(nameof(PathsWithInvalidColons))]
         [PlatformSpecific(TestPlatforms.Windows)]
         [SkipOnTargetFramework(~TargetFrameworkMonikers.NetFramework)]
-        public void PathWithInvalidColons_ThrowsNotSupportedException_Desktop(string invalidPath)
+        public void PathWithInvalidColons_Throws_Desktop(string invalidPath)
         {
             if (PathFeatures.IsUsingLegacyPathNormalization())
             {
@@ -220,11 +259,13 @@ namespace System.IO.Tests
             }
             else
             {
-                Assert.Throws<NotSupportedException>(() => Create(invalidPath));
+                if (invalidPath.Contains('|'))
+                    Assert.Throws<ArgumentException>(() => Create(invalidPath));
+                else
+                    Assert.Throws<NotSupportedException>(() => Create(invalidPath));
             }
         }
 
-        [ActiveIssue(27269)]
         [Theory, MemberData(nameof(PathsWithInvalidColons))]
         [PlatformSpecific(TestPlatforms.Windows)]
         [SkipOnTargetFramework(TargetFrameworkMonikers.NetFramework)]
@@ -237,6 +278,7 @@ namespace System.IO.Tests
 
         [ConditionalFact(nameof(AreAllLongPathsAvailable))]
         [ActiveIssue(20117, TargetFrameworkMonikers.Uap)]
+        [ActiveIssue(32167, TargetFrameworkMonikers.NetFramework)]
         [PlatformSpecific(TestPlatforms.Windows)]  // long directory path succeeds
         public void DirectoryLongerThanMaxPath_Succeeds()
         {
@@ -298,6 +340,7 @@ namespace System.IO.Tests
 
         [ConditionalFact(nameof(AreAllLongPathsAvailable))]
         [ActiveIssue(20117, TargetFrameworkMonikers.Uap)]
+        [ActiveIssue(32167, TargetFrameworkMonikers.NetFramework)]
         [PlatformSpecific(TestPlatforms.Windows)]  // long directory path succeeds
         public void DirectoryLongerThanMaxDirectoryAsPath_Succeeds()
         {
@@ -349,7 +392,6 @@ namespace System.IO.Tests
             Assert.Throws<ArgumentException>(() => Create(path));
         }
 
-        [ActiveIssue(27269)]
         [Theory,
             MemberData(nameof(ControlWhiteSpace))]
         [PlatformSpecific(TestPlatforms.Windows)]
@@ -450,14 +492,20 @@ namespace System.IO.Tests
             Assert.Throws<NotSupportedException>(() => Create(path));
         }
 
-        [ActiveIssue(27269)]
         [Theory,
             MemberData(nameof(PathsWithColons))]
         [PlatformSpecific(TestPlatforms.Windows)] // alternate data streams
         [SkipOnTargetFramework(TargetFrameworkMonikers.NetFramework)]
         public void PathWithColons_ThrowsIOException_Core(string path)
         {
-            Assert.ThrowsAny<IOException>(() => Create(Path.Combine(TestDirectory, path)));
+            if (PlatformDetection.IsInAppContainer)
+            {
+                AssertExtensions.ThrowsAny<DirectoryNotFoundException, IOException, UnauthorizedAccessException>(() => Create(Path.Combine(TestDirectory, path))); 
+            }
+            else
+            {
+                Assert.ThrowsAny<IOException>(() => Create(Path.Combine(TestDirectory, path)));
+            }
         }
 
         [Theory,
@@ -487,7 +535,6 @@ namespace System.IO.Tests
             Assert.Throws<ArgumentException>(() => Create(path));
         }
 
-        [ActiveIssue(27269)]
         [Theory,
             MemberData(nameof(UncPathsWithoutShareName))]
         [PlatformSpecific(TestPlatforms.Windows)]
@@ -505,7 +552,6 @@ namespace System.IO.Tests
             Assert.Throws<ArgumentException>(() => Create("//"));
         }
 
-        [ActiveIssue(27269)]
         [Fact]
         [PlatformSpecific(TestPlatforms.Windows)]
         [SkipOnTargetFramework(TargetFrameworkMonikers.NetFramework)]

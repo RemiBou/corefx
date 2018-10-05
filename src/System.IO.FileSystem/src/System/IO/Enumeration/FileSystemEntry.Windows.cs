@@ -2,12 +2,19 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
+using System.IO;
+
+#if MS_IO_REDIST
+namespace Microsoft.IO.Enumeration
+#else
 namespace System.IO.Enumeration
+#endif
 {
     /// <summary>
     /// Lower level view of FileSystemInfo used for processing and filtering find results.
     /// </summary>
-    public unsafe ref struct FileSystemEntry
+    public unsafe ref partial struct FileSystemEntry
     {
         internal static void Initialize(
             ref FileSystemEntry entry,
@@ -73,18 +80,12 @@ namespace System.IO.Enumeration
         public bool IsHidden => (Attributes & FileAttributes.Hidden) != 0;
 
         public FileSystemInfo ToFileSystemInfo()
-            => FileSystemInfo.Create(PathHelpers.CombineNoChecks(Directory, FileName), ref this);
-
-        /// <summary>
-        /// Returns the full path for find results, based on the initially provided path.
-        /// </summary>
-        public string ToSpecifiedFullPath() =>
-            PathHelpers.CombineNoChecks(OriginalRootDirectory, Directory.Slice(RootDirectory.Length), FileName);
+            => FileSystemInfo.Create(Path.Join(Directory, FileName), ref this);
 
         /// <summary>
         /// Returns the full path of the find result.
         /// </summary>
         public string ToFullPath() =>
-            PathHelpers.CombineNoChecks(Directory, FileName);
+            Path.Join(Directory, FileName);
     }
 }

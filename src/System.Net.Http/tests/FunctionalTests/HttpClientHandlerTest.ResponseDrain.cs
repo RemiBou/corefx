@@ -5,51 +5,23 @@
 using System.IO;
 using System.Net.Test.Common;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
 namespace System.Net.Http.Functional.Tests
 {
-    public class HttpClientHandler_ResponseDrain_Test : HttpClientTestBase
+   public abstract class HttpClientHandler_ResponseDrain_Test : HttpClientTestBase
     {
-        public enum ContentMode
-        {
-            ContentLength,
-            SingleChunk,
-            BytePerChunk
-        }
-
-        private static string GetResponseForContentMode(string content, ContentMode mode)
-        {
-            switch (mode)
-            {
-                case ContentMode.ContentLength:
-                    return LoopbackServer.GetHttpResponse(content: content);
-                case ContentMode.SingleChunk:
-                    return LoopbackServer.GetSingleChunkHttpResponse(content: content);
-                case ContentMode.BytePerChunk:
-                    return LoopbackServer.GetBytePerChunkHttpResponse(content: content);
-                default:
-                    Assert.True(false);
-                    return null;
-            }
-        }
+        protected virtual void SetResponseDrainTimeout(HttpClientHandler handler, TimeSpan time) { }
 
         [OuterLoop]
         [Theory]
-        [InlineData(ContentMode.ContentLength)]
-        [InlineData(ContentMode.SingleChunk)]
-        [InlineData(ContentMode.BytePerChunk)]
-        public async Task GetAsync_DisposeBeforeReadingToEnd_DrainsRequestsAndReusesConnection(ContentMode mode)
+        [InlineData(LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(LoopbackServer.ContentMode.BytePerChunk)]
+        public async Task GetAsync_DisposeBeforeReadingToEnd_DrainsRequestsAndReusesConnection(LoopbackServer.ContentMode mode)
         {
-            if (IsWinHttpHandler && mode == ContentMode.BytePerChunk)
-            {
-                // WinHttpHandler seems to only do a limited amount of draining when chunking is used;
-                // I *think* it's not draining anything beyond the current chunk being processed.
-                // So, these cases won't pass.
-                return;
-            }
-
             const string simpleContent = "Hello world!";
 
             await LoopbackServer.CreateClientAndServerAsync(
@@ -81,7 +53,9 @@ namespace System.Net.Http.Functional.Tests
                 {
                     await server.AcceptConnectionAsync(async connection =>
                     {
-                        string response = GetResponseForContentMode(simpleContent, mode);
+                        server.ListenSocket.Close(); // Shut down the listen socket so attempts at additional connections would fail on the client
+
+                        string response = LoopbackServer.GetContentModeResponse(mode, simpleContent);
                         await connection.ReadRequestHeaderAndSendCustomResponseAsync(response);
                         await connection.ReadRequestHeaderAndSendCustomResponseAsync(response);
                     });
@@ -93,48 +67,33 @@ namespace System.Net.Http.Functional.Tests
 
         [OuterLoop]
         [Theory]
-        [InlineData(0, 0, ContentMode.ContentLength)]
-        [InlineData(0, 0, ContentMode.SingleChunk)]
-        [InlineData(1, 0, ContentMode.ContentLength)]
-        [InlineData(1, 0, ContentMode.SingleChunk)]
-        [InlineData(1, 0, ContentMode.BytePerChunk)]
-        [InlineData(2, 1, ContentMode.ContentLength)]
-        [InlineData(2, 1, ContentMode.SingleChunk)]
-        [InlineData(2, 1, ContentMode.BytePerChunk)]
-        [InlineData(10, 1, ContentMode.ContentLength)]
-        [InlineData(10, 1, ContentMode.SingleChunk)]
-        [InlineData(10, 1, ContentMode.BytePerChunk)]
-        [InlineData(100, 10, ContentMode.ContentLength)]
-        [InlineData(100, 10, ContentMode.SingleChunk)]
-        [InlineData(100, 10, ContentMode.BytePerChunk)]
-        [InlineData(1000, 950, ContentMode.ContentLength)]
-        [InlineData(1000, 950, ContentMode.SingleChunk)]
-        [InlineData(1000, 950, ContentMode.BytePerChunk)]
-        [InlineData(10000, 9500, ContentMode.ContentLength)]
-        [InlineData(10000, 9500, ContentMode.SingleChunk)]
-        [InlineData(10000, 9500, ContentMode.BytePerChunk)]
-        public async Task GetAsyncWithMaxConnections_DisposeBeforeReadingToEnd_DrainsRequestsAndReusesConnection(int totalSize, int readSize, ContentMode mode)
+        [InlineData(0, 0, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(0, 0, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(1, 0, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(1, 0, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(1, 0, LoopbackServer.ContentMode.BytePerChunk)]
+        [InlineData(2, 1, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(2, 1, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(2, 1, LoopbackServer.ContentMode.BytePerChunk)]
+        [InlineData(10, 1, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(10, 1, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(10, 1, LoopbackServer.ContentMode.BytePerChunk)]
+        [InlineData(100, 10, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(100, 10, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(100, 10, LoopbackServer.ContentMode.BytePerChunk)]
+        [InlineData(1000, 950, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(1000, 950, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(1000, 950, LoopbackServer.ContentMode.BytePerChunk)]
+        [InlineData(10000, 9500, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(10000, 9500, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(10000, 9500, LoopbackServer.ContentMode.BytePerChunk)]
+        public async Task GetAsyncWithMaxConnections_DisposeBeforeReadingToEnd_DrainsRequestsAndReusesConnection(int totalSize, int readSize, LoopbackServer.ContentMode mode)
         {
-            if (IsWinHttpHandler && 
-                ((mode == ContentMode.SingleChunk && readSize == 0) ||
-                 (mode == ContentMode.BytePerChunk)))
-            {
-                // WinHttpHandler seems to only do a limited amount of draining when TE is used;
-                // I *think* it's not draining anything beyond the current chunk being processed.
-                // So, these cases won't pass.
-                return;
-            }
-
-            if (IsCurlHandler)
-            {
-                // CurlHandler drain behavior is very inconsistent, so just skip these tests.
-                return;
-            }
-
             await LoopbackServer.CreateClientAndServerAsync(
                 async url =>
                 {
                     HttpClientHandler handler = CreateHttpClientHandler();
+                    SetResponseDrainTimeout(handler, Timeout.InfiniteTimeSpan);
 
                     // Set MaxConnectionsPerServer to 1.  This will ensure we will wait for the previous request to drain (or fail to)
                     handler.MaxConnectionsPerServer = 1;
@@ -159,10 +118,18 @@ namespace System.Net.Http.Functional.Tests
                 async server =>
                 {
                     string content = new string('a', totalSize);
-                    string response = GetResponseForContentMode(content, mode);
+                    string response = LoopbackServer.GetContentModeResponse(mode, content);
                     await server.AcceptConnectionAsync(async connection =>
                     {
-                        await connection.ReadRequestHeaderAndSendCustomResponseAsync(response);
+                        // Process the first request, with some introduced delays in the response to
+                        // stress the draining.
+                        await connection.ReadRequestHeaderAsync().ConfigureAwait(false);
+                        foreach (char c in response)
+                        {
+                            await connection.Writer.WriteAsync(c);
+                        }
+
+                        // Process the second request.
                         await connection.ReadRequestHeaderAndSendCustomResponseAsync(response);
                     });
                 });
@@ -170,20 +137,14 @@ namespace System.Net.Http.Functional.Tests
 
         [OuterLoop]
         [Theory]
-        [InlineData(100000, 1, ContentMode.ContentLength)]
-        [InlineData(100000, 1, ContentMode.SingleChunk)]
-        [InlineData(100000, 1, ContentMode.BytePerChunk)]
-        [InlineData(800000, 1, ContentMode.ContentLength)]
-        [InlineData(800000, 1, ContentMode.SingleChunk)]
-        [InlineData(1024 * 1024, 1, ContentMode.ContentLength)]
-        public async Task GetAsyncLargeRequestWithMaxConnections_DisposeBeforeReadingToEnd_DrainsRequestsAndReusesConnection(int totalSize, int readSize, ContentMode mode)
+        [InlineData(100000, 1, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(100000, 1, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(100000, 1, LoopbackServer.ContentMode.BytePerChunk)]
+        [InlineData(800000, 1, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(800000, 1, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(1024 * 1024, 1, LoopbackServer.ContentMode.ContentLength)]
+        public async Task GetAsyncLargeRequestWithMaxConnections_DisposeBeforeReadingToEnd_DrainsRequestsAndReusesConnection(int totalSize, int readSize, LoopbackServer.ContentMode mode)
         {
-            // SocketsHttpHandler will reliably drain up to 1MB; other handlers don't.
-            if (!UseSocketsHttpHandler)
-            {
-                return;
-            }
-
             await GetAsyncWithMaxConnections_DisposeBeforeReadingToEnd_DrainsRequestsAndReusesConnection(totalSize, readSize, mode);
             return;
         }
@@ -192,18 +153,19 @@ namespace System.Net.Http.Functional.Tests
 
         [OuterLoop]
         [Theory]
-        [InlineData(2000000, 0, ContentMode.ContentLength)]
-        [InlineData(2000000, 0, ContentMode.SingleChunk)]
-        [InlineData(2000000, 0, ContentMode.BytePerChunk)]
-        [InlineData(4000000, 1000000, ContentMode.ContentLength)]
-        [InlineData(4000000, 1000000, ContentMode.SingleChunk)]
-        [InlineData(4000000, 1000000, ContentMode.BytePerChunk)]
-        public async Task GetAsyncWithMaxConnections_DisposeBeforeReadingToEnd_KillsConnection(int totalSize, int readSize, ContentMode mode)
+        [InlineData(2000000, 0, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(2000000, 0, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(2000000, 0, LoopbackServer.ContentMode.BytePerChunk)]
+        [InlineData(4000000, 1000000, LoopbackServer.ContentMode.ContentLength)]
+        [InlineData(4000000, 1000000, LoopbackServer.ContentMode.SingleChunk)]
+        [InlineData(4000000, 1000000, LoopbackServer.ContentMode.BytePerChunk)]
+        public async Task GetAsyncWithMaxConnections_DisposeBeforeReadingToEnd_KillsConnection(int totalSize, int readSize, LoopbackServer.ContentMode mode)
         {
             await LoopbackServer.CreateClientAndServerAsync(
                 async url =>
                 {
                     HttpClientHandler handler = CreateHttpClientHandler();
+                    SetResponseDrainTimeout(handler, Timeout.InfiniteTimeSpan);
 
                     // Set MaxConnectionsPerServer to 1.  This will ensure we will wait for the previous request to drain (or fail to)
                     handler.MaxConnectionsPerServer = 1;
@@ -228,39 +190,38 @@ namespace System.Net.Http.Functional.Tests
                 async server =>
                 {
                     string content = new string('a', totalSize);
-                    string response = GetResponseForContentMode(content, mode);
                     await server.AcceptConnectionAsync(async connection =>
                     {
                         await connection.ReadRequestHeaderAsync();
                         try
                         {
-                            await connection.Writer.WriteAsync(response);
+                            await connection.Writer.WriteAsync(LoopbackServer.GetContentModeResponse(mode, content, connectionClose: false));
                         }
                         catch (Exception) { }     // Eat errors from client disconnect.
 
-                        await server.AcceptConnectionSendCustomResponseAndCloseAsync(response);
+                        await server.AcceptConnectionSendCustomResponseAndCloseAsync(LoopbackServer.GetContentModeResponse(mode, content, connectionClose: true));
                     });
                 });
         }
 
-        private static void ValidateResponseHeaders(HttpResponseMessage response, int contentLength, ContentMode mode)
+        protected static void ValidateResponseHeaders(HttpResponseMessage response, int contentLength, LoopbackServer.ContentMode mode)
         {
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
             switch (mode)
             {
-                case ContentMode.ContentLength:
+                case LoopbackServer.ContentMode.ContentLength:
                     Assert.Equal(contentLength, response.Content.Headers.ContentLength);
                     break;
 
-                case ContentMode.SingleChunk:
-                case ContentMode.BytePerChunk:
+                case LoopbackServer.ContentMode.SingleChunk:
+                case LoopbackServer.ContentMode.BytePerChunk:
                     Assert.True(response.Headers.TransferEncodingChunked);
                     break;
             }
         }
 
-        private static async Task<byte[]> ReadToByteCount(Stream stream, int byteCount)
+        protected static async Task<byte[]> ReadToByteCount(Stream stream, int byteCount)
         {
             byte[] buffer = new byte[byteCount];
             int totalBytesRead = 0;

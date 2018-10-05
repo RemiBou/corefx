@@ -8,9 +8,12 @@
 using System.Runtime.Serialization;
 
 // These types were moved down to System.Primitives
+[assembly: System.Runtime.CompilerServices.TypeForwardedTo(typeof(System.ComponentModel.InvalidAsynchronousStateException))]
 [assembly: System.Runtime.CompilerServices.TypeForwardedTo(typeof(System.ComponentModel.InvalidEnumArgumentException))]
 [assembly: System.Runtime.CompilerServices.TypeForwardedTo(typeof(System.ComponentModel.Component))]
 [assembly: System.Runtime.CompilerServices.TypeForwardedTo(typeof(System.ComponentModel.ISupportInitialize))]
+// moved to System.ObjectModel
+[assembly: System.Runtime.CompilerServices.TypeForwardedTo(typeof(System.ComponentModel.TypeConverterAttribute))]
 
 namespace System
 {
@@ -302,13 +305,6 @@ namespace System.ComponentModel
     {
         public Int64Converter() { }
     }
-    public partial class InvalidAsynchronousStateException : System.ArgumentException
-    {
-        public InvalidAsynchronousStateException() { }
-        public InvalidAsynchronousStateException(string message) { }
-        public InvalidAsynchronousStateException(string message, System.Exception innerException) { }
-        protected InvalidAsynchronousStateException(SerializationInfo info, StreamingContext context) { }
-    }
     public partial interface ITypeDescriptorContext : System.IServiceProvider
     {
         System.ComponentModel.IContainer Container { get; }
@@ -497,6 +493,15 @@ namespace System.ComponentModel
         public override object ConvertFrom(System.ComponentModel.ITypeDescriptorContext context, System.Globalization.CultureInfo culture, object value) { throw null; }
         public override object ConvertTo(System.ComponentModel.ITypeDescriptorContext context, System.Globalization.CultureInfo culture, object value, System.Type destinationType) { throw null; }
     }
+    public partial class VersionConverter : System.ComponentModel.TypeConverter
+    {
+        public VersionConverter() { }
+        public override bool CanConvertFrom(System.ComponentModel.ITypeDescriptorContext context, System.Type sourceType) { throw null; }
+        public override bool CanConvertTo(System.ComponentModel.ITypeDescriptorContext context, System.Type destinationType) { throw null; }
+        public override object ConvertFrom(System.ComponentModel.ITypeDescriptorContext context, System.Globalization.CultureInfo culture, object value) { throw null; }
+        public override object ConvertTo(System.ComponentModel.ITypeDescriptorContext context, System.Globalization.CultureInfo culture, object value, System.Type destinationType) { throw null; }
+        public override bool IsValid(System.ComponentModel.ITypeDescriptorContext context, object value) { throw null; }
+    }
     public partial class TypeConverter
     {
         public TypeConverter() { }
@@ -559,17 +564,6 @@ namespace System.ComponentModel
             public void CopyTo(System.Array array, int index) { }
             public System.Collections.IEnumerator GetEnumerator() { throw null; }
         }
-    }
-    [System.AttributeUsageAttribute((System.AttributeTargets)(32767))]
-    public sealed partial class TypeConverterAttribute : System.Attribute
-    {
-        public static readonly System.ComponentModel.TypeConverterAttribute Default;
-        public TypeConverterAttribute() { }
-        public TypeConverterAttribute(string typeName) { }
-        public TypeConverterAttribute(System.Type type) { }
-        public string ConverterTypeName { get { throw null; } }
-        public override bool Equals(object obj) { throw null; }
-        public override int GetHashCode() { throw null; }
     }
     public abstract partial class TypeDescriptionProvider
     {

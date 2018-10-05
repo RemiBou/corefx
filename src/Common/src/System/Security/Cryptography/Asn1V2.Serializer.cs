@@ -398,6 +398,7 @@ namespace System.Security.Cryptography.Asn1
 
         private static Deserializer DefaultValueDeserializer(
             Deserializer valueDeserializer,
+            Deserializer literalValueDeserializer,
             bool isOptional,
             byte[] defaultContents,
             Asn1Tag? expectedTag)
@@ -407,6 +408,7 @@ namespace System.Security.Cryptography.Asn1
                     reader,
                     expectedTag,
                     valueDeserializer,
+                    literalValueDeserializer,
                     defaultContents,
                     isOptional);
         }
@@ -415,6 +417,7 @@ namespace System.Security.Cryptography.Asn1
             AsnReader reader,
             Asn1Tag? expectedTag,
             Deserializer valueDeserializer,
+            Deserializer literalValueDeserializer,
             byte[] defaultContents,
             bool isOptional)
         {
@@ -437,7 +440,7 @@ namespace System.Security.Cryptography.Asn1
 
             if (defaultContents != null)
             {
-                return DefaultValue(defaultContents, valueDeserializer);
+                return DefaultValue(defaultContents, literalValueDeserializer);
             }
 
             throw new CryptographicException(SR.Cryptography_Der_Invalid_Encoding);
@@ -502,7 +505,7 @@ namespace System.Security.Cryptography.Asn1
             {
                 return (obj, writer) =>
                 {
-                    using (AsnWriter tmp = new AsnWriter(AsnEncodingRules.DER))
+                    using (AsnWriter tmp = new AsnWriter(writer.RuleSet))
                     {
                         serializer(obj, tmp);
 
@@ -585,12 +588,19 @@ namespace System.Security.Cryptography.Asn1
             {
                 if (fieldData.TagType == UniversalTagNumber.ObjectIdentifier)
                 {
-                    return (value, writer) => writer.WriteObjectIdentifier(tag, (string)value);
+                    return (value, writer) =>
+                        writer.WriteObjectIdentifier(
+                            tag,
+                            (string)value ?? throw new CryptographicException(SR.Argument_InvalidOidValue));
                 }
 
                 // Because all string types require an attribute saying their type, we'll
-                // definitely have a value.
-                return (value, writer) => writer.WriteCharacterString(tag, fieldData.TagType.Value, (string)value);
+                // definitely have a TagType value.
+                return (value, writer) =>
+                    writer.WriteCharacterString(
+                        tag,
+                        fieldData.TagType.Value,
+                        (string)value ?? throw new CryptographicException(SR.Argument_InvalidOidValue));
             }
 
             if (typeT == typeof(ReadOnlyMemory<byte>) && !fieldData.IsCollection)
@@ -630,16 +640,7 @@ namespace System.Security.Cryptography.Asn1
 
                 if (fieldData.TagType == UniversalTagNumber.Integer)
                 {
-                    return (value, writer) =>
-                    {
-                        // TODO: split netstandard/netcoreapp for span usage?
-                        ReadOnlyMemory<byte> valAsMemory = (ReadOnlyMemory<byte>)value;
-                        byte[] tooBig = new byte[valAsMemory.Length + 1];
-                        valAsMemory.Span.CopyTo(tooBig.AsSpan().Slice(1));
-                        Array.Reverse(tooBig);
-                        BigInteger bigInt = new BigInteger(tooBig);
-                        writer.WriteInteger(bigInt);
-                    };
+                    return (value, writer) => writer.WriteInteger(tag, ((ReadOnlyMemory<byte>)value).Span);
                 }
 
                 Debug.Fail($"No ReadOnlyMemory<byte> handler for {fieldData.TagType}");
@@ -761,9 +762,10 @@ namespace System.Security.Cryptography.Asn1
                 {
                     expectedTag = fieldData.ExpectedTag;
                 }
-                    
+
                 deserializer = DefaultValueDeserializer(
                     deserializer,
+                    literalValueDeserializer,
                     fieldData.IsOptional,
                     fieldData.DefaultContents,
                     expectedTag);
@@ -876,12 +878,12 @@ namespace System.Security.Cryptography.Asn1
                         // Guaranteed too big, because it has the tag and length.
                         int length = reader.PeekEncodedValue().Length;
                         byte[] rented = ArrayPool<byte>.Shared.Rent(length);
-                        
+
                         try
                         {
-                            if (reader.TryCopyBitStringBytes(rented, out _, out int bytesWritten))
+                            if (reader.TryCopyBitStringBytes(expectedTag, rented, out _, out int bytesWritten))
                             {
-                                return new ReadOnlyMemory<byte>(rented.AsReadOnlySpan().Slice(0, bytesWritten).ToArray());
+                                return new ReadOnlyMemory<byte>(rented.AsSpan(0, bytesWritten).ToArray());
                             }
 
                             Debug.Fail("TryCopyBitStringBytes produced more data than the encoded size");
@@ -910,9 +912,9 @@ namespace System.Security.Cryptography.Asn1
 
                         try
                         {
-                            if (reader.TryCopyOctetStringBytes(rented, out int bytesWritten))
+                            if (reader.TryCopyOctetStringBytes(expectedTag, rented, out int bytesWritten))
                             {
-                                return new ReadOnlyMemory<byte>(rented.AsReadOnlySpan().Slice(0, bytesWritten).ToArray());
+                                return new ReadOnlyMemory<byte>(rented.AsSpan(0, bytesWritten).ToArray());
                             }
 
                             Debug.Fail("TryCopyOctetStringBytes produced more data than the encoded size");
@@ -937,8 +939,7 @@ namespace System.Security.Cryptography.Asn1
 
             if (typeT == typeof(Oid))
             {
-                bool skipFriendlyName = !fieldData.PopulateOidFriendlyName.GetValueOrDefault();
-                return reader => reader.ReadObjectIdentifier(expectedTag, skipFriendlyName);
+                return reader => reader.ReadObjectIdentifier(expectedTag);
             }
 
             if (typeT.IsArray)
@@ -1030,7 +1031,7 @@ namespace System.Security.Cryptography.Asn1
             throw new AsnSerializationConstraintException(
                 SR.Format(SR.Cryptography_AsnSerializer_UnhandledType, typeT.FullName));
         }
-        
+
         private static object DefaultValue(
             byte[] defaultContents,
             Deserializer valueDeserializer)
@@ -1109,19 +1110,8 @@ namespace System.Security.Cryptography.Asn1
                 }
                 else if (attr is ObjectIdentifierAttribute oid)
                 {
-                    serializerFieldData.PopulateOidFriendlyName = oid.PopulateFriendlyName;
                     expectedTypes = new[] { typeof(Oid), typeof(string) };
                     serializerFieldData.TagType = UniversalTagNumber.ObjectIdentifier;
-
-                    if (oid.PopulateFriendlyName && unpackedType == typeof(string))
-                    {
-                        throw new AsnSerializationConstraintException(
-                            SR.Format(
-                                SR.Cryptography_AsnSerializer_PopulateFriendlyNameOnString,
-                                fieldInfo.Name,
-                                fieldInfo.DeclaringType.FullName,
-                                typeof(Oid).FullName));
-                    }
                 }
                 else if (attr is BMPStringAttribute)
                 {
@@ -1381,14 +1371,14 @@ namespace System.Security.Cryptography.Asn1
         /// <remarks>
         /// Except for where required to for avoiding ambiguity, this method does not check that there are
         /// no cycles in the type graph for <typeparamref name="T"/>.  If <typeparamref name="T"/> is a
-        /// reference type (class) which includes a cycle in the type graph, 
+        /// reference type (class) which includes a cycle in the type graph,
         /// then it is possible for the data in <paramref name="source"/> to cause
         /// an arbitrary extension to the maximum stack depth of this routine, leading to a
         /// <see cref="StackOverflowException"/>.
-        /// 
+        ///
         /// If <typeparamref name="T"/> is a value type (struct) the compiler will enforce that there are no
         /// cycles in the type graph.
-        /// 
+        ///
         /// When reference types are used the onus is on the caller of this method to prevent cycles, or to
         /// mitigate the possibility of the stack overflow.
         /// </remarks>
@@ -1427,14 +1417,14 @@ namespace System.Security.Cryptography.Asn1
         /// <remarks>
         /// Except for where required to for avoiding ambiguity, this method does not check that there are
         /// no cycles in the type graph for <typeparamref name="T"/>.  If <typeparamref name="T"/> is a
-        /// reference type (class) which includes a cycle in the type graph, 
+        /// reference type (class) which includes a cycle in the type graph,
         /// then it is possible for the data in <paramref name="source"/> to cause
         /// an arbitrary extension to the maximum stack depth of this routine, leading to a
         /// <see cref="StackOverflowException"/>.
-        /// 
+        ///
         /// If <typeparamref name="T"/> is a value type (struct) the compiler will enforce that there are no
         /// cycles in the type graph.
-        /// 
+        ///
         /// When reference types are used the onus is on the caller of this method to prevent cycles, or to
         /// mitigate the possibility of the stack overflow.
         /// </remarks>
@@ -1471,10 +1461,10 @@ namespace System.Security.Cryptography.Asn1
         /// no cycles in the type graph for <typeparamref name="T"/>.  If <typeparamref name="T"/> is a
         /// reference type (class) which includes a cycle in the type graph, and there is a cycle within the
         /// object graph this method will consume memory and stack space until one is exhausted.
-        /// 
+        ///
         /// If <typeparamref name="T"/> is a value type (struct) the compiler will enforce that there are no
         /// cycles in the type graph.
-        /// 
+        ///
         /// When reference types are used the onus is on the caller of this method to prevent object cycles,
         /// or to mitigate the possibility of the stack overflow or memory exhaustion.
         /// </remarks>
@@ -1513,10 +1503,10 @@ namespace System.Security.Cryptography.Asn1
         /// no cycles in the type graph for <typeparamref name="T"/>.  If <typeparamref name="T"/> is a
         /// reference type (class) which includes a cycle in the type graph, and there is a cycle within the
         /// object graph this method will consume memory and stack space until one is exhausted.
-        /// 
+        ///
         /// If <typeparamref name="T"/> is a value type (struct) the compiler will enforce that there are no
         /// cycles in the type graph.
-        /// 
+        ///
         /// When reference types are used the onus is on the caller of this method to prevent object cycles,
         /// or to mitigate the possibility of the stack overflow or memory exhaustion.
         /// </remarks>
@@ -1538,7 +1528,6 @@ namespace System.Security.Cryptography.Asn1
         {
             internal bool WasCustomized;
             internal UniversalTagNumber? TagType;
-            internal bool? PopulateOidFriendlyName;
             internal bool IsAny;
             internal bool IsCollection;
             internal byte[] DefaultContents;
@@ -1605,8 +1594,6 @@ namespace System.Security.Cryptography.Asn1
         public ObjectIdentifierAttribute()
         {
         }
-
-        public bool PopulateFriendlyName { get; set; }
     }
 
     [AttributeUsage(AttributeTargets.Field)]

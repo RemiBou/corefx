@@ -2,11 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.Win32;
-using System;
-using System.Diagnostics;
-using System.IO.Pipes;
-using System.Security.Principal;
 using Xunit;
 
 namespace System.ServiceProcess.Tests
@@ -14,6 +9,7 @@ namespace System.ServiceProcess.Tests
     [OuterLoop(/* Modifies machine state */)]
     public class ServiceControllerTests : IDisposable
     {
+        private const int connectionTimeout = 30000;
         private readonly TestServiceProvider _testService;
 
         private static readonly Lazy<bool> s_isElevated = new Lazy<bool>(() => AdminHelpers.IsProcessElevated());
@@ -29,8 +25,7 @@ namespace System.ServiceProcess.Tests
 
         private void AssertExpectedProperties(ServiceController testServiceController)
         {
-            var comparer = PlatformDetection.IsFullFramework ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal; // Full framework upper cases the name
-            Assert.Equal(_testService.TestServiceName, testServiceController.ServiceName, comparer);
+            Assert.Equal(_testService.TestServiceName, testServiceController.ServiceName, StringComparer.OrdinalIgnoreCase);
             Assert.Equal(_testService.TestServiceDisplayName, testServiceController.DisplayName);
             Assert.Equal(_testService.TestMachineName, testServiceController.MachineName);
             Assert.Equal(ServiceType.Win32OwnProcess, testServiceController.ServiceType);
@@ -108,25 +103,30 @@ namespace System.ServiceProcess.Tests
         {
             string serviceName = _testService.TestServiceName;
             var controller = new ServiceController(serviceName);
+
             controller.WaitForStatus(ServiceControllerStatus.Running, _testService.ControlTimeout);
             Assert.Equal(ServiceControllerStatus.Running, controller.Status);
 
-            using (var client = new NamedPipeClientStream(".", serviceName, PipeDirection.In))
-            {
-                client.Connect();
-                for (int i = 0; i < 2; i++)
-                {
-                    controller.Pause();
-                    client.ReadByte();
-                    controller.WaitForStatus(ServiceControllerStatus.Paused, _testService.ControlTimeout);
-                    Assert.Equal(ServiceControllerStatus.Paused, controller.Status);
+            _testService.Client.Connect(connectionTimeout);
+            Assert.Equal((int)PipeMessageByteCode.Connected, _testService.GetByte());
 
-                    controller.Continue();
-                    client.ReadByte();
-                    controller.WaitForStatus(ServiceControllerStatus.Running, _testService.ControlTimeout);
-                    Assert.Equal(ServiceControllerStatus.Running, controller.Status);
-                }
+            for (int i = 0; i < 2; i++)
+            {
+                controller.Pause();
+                Assert.Equal((int)PipeMessageByteCode.Pause, _testService.GetByte());
+                controller.WaitForStatus(ServiceControllerStatus.Paused, _testService.ControlTimeout);
+                Assert.Equal(ServiceControllerStatus.Paused, controller.Status);
+
+                controller.Continue();
+                Assert.Equal((int)PipeMessageByteCode.Continue, _testService.GetByte());
+                controller.WaitForStatus(ServiceControllerStatus.Running, _testService.ControlTimeout);
+                Assert.Equal(ServiceControllerStatus.Running, controller.Status);
             }
+
+            controller.Stop();
+            Assert.Equal((int)PipeMessageByteCode.Stop, _testService.GetByte());
+            controller.WaitForStatus(ServiceControllerStatus.Stopped, _testService.ControlTimeout);
+            Assert.Equal(ServiceControllerStatus.Stopped, controller.Status);
         }
 
         [ConditionalFact(nameof(IsProcessElevated))]
